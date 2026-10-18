@@ -1,59 +1,41 @@
-# VRC Quick Launcher
+# Steamalt
 
-A small launcher for VRChat. Set your launch options once, pick which profiles you want, and start one or several VRChat clients with a click, so you don't need a desktop full of shortcuts.
-
-It doesn't include auto-updates, game installation, or an embedded website yet, since it isn't at that level, but it will get there.
-
-Based off:
-- https://github.com/hollyntt/MeowNet-Launcher
-
-Inspired by the official [VRC Quick Launcher](https://vcc.docs.vrchat.com/tools/vrc-quick-launcher/) from the VRChat Creator Companion.
-
-## THIS IS NOT AN OFFICIAL LAUNCHER, THIS IS A FANMADE LAUNCHER.
+Steamalt is a Linux-only launcher for starting Steam and Steam games through Firejail. Each named launch profile has a persistent sandbox home, while using the host Steam installation and game libraries.
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit). The Browse, Open and Save As dialogs and auto-layout are Windows only.
-- VRChat already installed. Point the launcher at `start_protected_game.exe` (or use **Browse**).
-- Optional: SteamVR. If it's installed, the launcher registers itself so it can be listed and started from SteamVR.
+- Linux (x64 or ARM64)
+- .NET 10
+- Steam and Firejail installed and available in `PATH`
+- Steam installed on the host, with games installed in its libraries
 
-## Features
+Steamalt does not install or update Steam or games. It reuses the host Steam client, its login, and its installed game libraries; the profiles do not provide separate Steam accounts.
 
-- **Profiles.** Add as many as you like. Each one maps to VRChat's own `--profile=X` flag, so every profile keeps its own login and settings and you can run multiple accounts side by side.
-    - Give each profile a description.
-    - Launch profiles one at a time, or tick several and use **Launch all selected**.
-    - Choose per profile whether it starts in VR or desktop mode (`--no-vr`).
-- **Launch options** available straight from the UI:
-    - Debug GUI, SDK log, UDON log
-    - Watch worlds and Watch avatars
-    - MIDI device, OSC config (defaults to `9000:localhost:9001`), and max FPS
-    - Custom parameters, for any flag not listed above
-- **Instance info.**
-    - *Create* a new instance from a world ID, with access type (Public, Friends+, Friends, Invite+, Invite), region (US West, US East, Europe, Japan) and owner ID.
-    - *Join* an existing instance by pasting its link.
-    - *None* if you just want to open VRChat.
-- **Auto-layout.** Tiles the VRChat windows across your main monitor when you launch several profiles at once.
-- **Auto-close.** Closes the launcher once your clients have been launched.
-- **CPU affinity.** Restrict launched clients to specific cores (Edit menu, comma-separated, e.g. `0,1,2,3`).
-- **Themes.** Light, Colourful Light, Dark and Colourful Dark, from the Themes menu.
-- **Saved settings.** Everything is stored in a `vrcql_config.json` next to the exe.
-    - **File > Save** / **Save As...** / **Open...** let you keep and switch between configurations.
-    - **Save on Exit** saves automatically when you close the app (on by default).
-    - **Open Save Location** opens the folder containing your config.
-- **Tiny footprint.** A single exe, plus the JSON config it creates.
-- The window minimizes while VRChat is running and comes back when you close it.
+## Usage
 
-## Instance links
+Add a launch profile, enter the game's Steam App ID, and select **Launch game**. Select **Start Steam** to open the host Steam client inside Firejail. Profiles use stable homes under `$XDG_DATA_HOME/steamalt/profiles` (or `~/.local/share/steamalt/profiles` when `XDG_DATA_HOME` is unset). They keep per-profile sandbox files, but Steam account state and game libraries are shared with the host Steam installation. Removing a profile does not delete its profile home.
 
-Creating an instance builds a `vrchat://launch` link for you. Because VRChat's instance format can change, if a created instance stops resolving, try joining with a link copied from VRChat itself instead.
+To use a non-Steam game, select **Start Steam**, then add it in that Steam window using **Games > Add a Non-Steam Game to My Library**. Launch it from Steam while that Firejail session is running. Steamalt does not add game entries itself. The host home is visible in Steam's file picker; it is read-only except for the Steam installation and registered game libraries, which Steam may update.
 
-Also note that Friends, Invite+ and Invite instances are tied to the owner ID you enter, so that account needs to be the one launching them.
+Launching a game starts:
 
-## Building
+```text
+firejail --ignore=seccomp --ignore=whitelist --ignore=blacklist \
+  --profile=steam --allow-bwrap \
+  --env=HOME=<profile-home> \
+  --read-only=<host-home> --read-write=<profile-home> \
+  --read-write=<steam-install> --read-write=<steam-library> \
+  -- steam -applaunch <app-id>
+```
 
-The project is C# on .NET 8 and uses [Raylib-cs](https://github.com/raylib-cs/raylib-cs), [ImGui.NET](https://github.com/ImGuiNET/ImGui.NET), rlImGui_cs and OpenVR (`Valve.VR`). Define `WINDOWS_BUILD` to enable the Windows file dialogs and auto-layout.
+Steamalt disables Firejail's seccomp filter so Proton's pressure-vessel `bwrap` can use `mount_setattr`, and enables nested bwrap. It ignores the Steam profile's whitelist and blacklist rules, which otherwise make host game paths such as `~/Applications` inaccessible to Steam. The host home is still mounted read-only, except for the host Steam installation and registered Steam libraries, which are writable.
 
-## Links
+**Start Steam** runs the same command without `-applaunch <app-id>`. Steamalt uses the `firejail` and `steam` executables from `PATH`. Profiles are saved to `$XDG_CONFIG_HOME/steamalt/config.json` (or `~/.config/steamalt/config.json` when `XDG_CONFIG_HOME` is unset).
 
-- [Documentation](https://github.com/hollyntt/VRChat-Quick-Launcher/wiki)
-- [VRChat launch options](https://wiki.vrchat.com/wiki/Launch_Options)
+## Build
+
+```sh
+dotnet publish Steamalt.csproj -c Release -r linux-x64 --self-contained false
+```
+
+Use `-r linux-arm64` to publish for ARM64 Linux.
