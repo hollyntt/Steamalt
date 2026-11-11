@@ -96,7 +96,13 @@ jobs:
           path: publish/${{ matrix.rid }}
 
       - name: Install AppImage tools
-        run: sudo apt-get update && sudo apt-get install --yes squashfs-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes squashfs-tools
+          # appimagetool runs on the x86-64 CI host; ARCH selects the target runtime.
+          curl --fail --location --output appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
 
       - name: Create AppImage
         shell: bash
@@ -124,10 +130,8 @@ jobs:
           exec "$HERE/usr/lib/steamalt/Steamalt" "$@"
           EOF
           chmod +x AppDir/AppRun AppDir/usr/lib/steamalt/Steamalt
-          curl --fail --location --output appimagetool.AppImage \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage"
-          chmod +x appimagetool.AppImage
-          ARCH=${{ matrix.appimage_arch }} ./appimagetool.AppImage --appimage-extract-and-run \
+          export ARCH=${{ matrix.appimage_arch }}
+          ./appimagetool.AppImage --appimage-extract-and-run \
             AppDir "Steamalt-${{ matrix.rid }}.AppImage"
 
       - name: Upload AppImage
