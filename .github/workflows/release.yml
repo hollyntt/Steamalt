@@ -1,0 +1,148 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'SemVer tag to publish, for example v1.2.3'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  validate-version:
+    name: Validate SemVer tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$EVENT_TAG"
+          if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must use SemVer, for example v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.rid }}
+    needs: validate-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            appimage_arch: x86_64
+          - rid: linux-arm64
+            appimage_arch: aarch64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-version.outputs.tag }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install AppImage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes squashfs-tools
+          if [[ "${{ matrix.appimage_arch }}" == "x86_64" ]]; then
+            curl --fail --location --output "$RUNNER_TEMP/appimagetool.AppImage" \
+              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          else
+            curl --fail --location --output "$RUNNER_TEMP/appimagetool.AppImage" \
+              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+          fi
+          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
+
+      - name: Publish application
+        run: |
+          dotnet publish Steamalt.csproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            --property:Version=${{ needs.validate-version.outputs.version }} \
+            --property:AssemblyVersion=${{ needs.validate-version.outputs.version }} \
+            --property:FileVersion=${{ needs.validate-version.outputs.version }} \
+            --property:InformationalVersion=${{ needs.validate-version.outputs.version }} \
+            --output "$RUNNER_TEMP/AppDir/usr/lib/steamalt"
+
+      - name: Assemble AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          appdir="$RUNNER_TEMP/AppDir"
+          mkdir -p "$appdir/usr/share/icons/hicolor/256x256/apps" "$appdir/usr/share/applications"
+          cp icon.png "$appdir/usr/share/icons/hicolor/256x256/apps/steamalt.png"
+          cp icon.png "$appdir/steamalt.png"
+          cp "$GITHUB_WORKSPACE/icon.png" "$appdir/icon.png"
+          cat > "$appdir/steamalt.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=Steamalt
+          Comment=Launch Steam games through Firejail
+          Exec=steamalt
+          Icon=steamalt
+          Type=Application
+          Categories=Game;
+          Terminal=false
+          EOF
+          cp "$appdir/steamalt.desktop" "$appdir/usr/share/applications/steamalt.desktop"
+          cat > "$appdir/AppRun" <<'EOF'
+          #!/bin/sh
+          set -eu
+          HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec "$HERE/usr/lib/steamalt/Steamalt" "$@"
+          EOF
+          chmod +x "$appdir/AppRun"
+          export ARCH="${{ matrix.appimage_arch }}"
+          "$RUNNER_TEMP/appimagetool.AppImage" "$appdir" \
+            "$RUNNER_TEMP/Steamalt-${{ matrix.rid }}.AppImage"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Steamalt-${{ matrix.rid }}
+          path: ${{ runner.temp }}/Steamalt-${{ matrix.rid }}.AppImage
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [validate-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AppImages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Steamalt-linux-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate-version.outputs.tag }}
+          name: Steamalt ${{ needs.validate-version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.validate-version.outputs.version, '-') }}
+          files: release/*.AppImage
