@@ -32,6 +32,10 @@ Steamalt disables Firejail's seccomp filter so Proton's pressure-vessel `bwrap` 
 
 Steamalt uses the `firejail` and `steam` executables from `PATH`. Profiles are saved to `$XDG_CONFIG_HOME/steamalt/config.json` (or `~/.config/steamalt/config.json` when `XDG_CONFIG_HOME` is unset).
 
+## Updates
+
+When running as an AppImage, Steamalt checks the latest GitHub release on startup. If the release has a newer SemVer version than the current build, it downloads the matching architecture AppImage, replaces the current file, and restarts automatically. Updates are not applied when running the unpackaged executable; download the latest AppImage from the [Steamalt releases](https://github.com/hollyntt/Steamalt/releases) page.
+
 ## Build
 
 ```sh

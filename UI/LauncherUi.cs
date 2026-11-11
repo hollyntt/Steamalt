@@ -18,6 +18,7 @@ internal static partial class Program
 
         DrawProfiles();
         DrawProcessManager();
+        ImGui.TextDisabled(_updateStatus);
 
         ImGui.Dummy(new Vector2(0, 8));
         if (_isError)

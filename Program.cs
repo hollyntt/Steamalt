@@ -38,6 +38,7 @@ internal static partial class Program
         }
 
         LoadConfig();
+        StartUpdateCheck();
         Raylib.SetConfigFlags(ConfigFlags.ResizableWindow | ConfigFlags.HighDpiWindow);
         Raylib.InitWindow(720, 580, AppTitle);
         Raylib.SetTargetFPS(60);
