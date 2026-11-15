@@ -41,7 +41,7 @@ internal static partial class Program
         }
         else
         {
-            foreach (SteamProcessInfo process in _runningProcesses)
+            foreach (SteamProcessInfo process in _runningProcesses.ToArray())
             {
                 ImGui.PushID(process.ProcessId);
                 bool selected = ImGui.Selectable(
@@ -49,8 +49,13 @@ internal static partial class Program
                     _selectedProcessId == process.ProcessId);
                 if (selected)
                     _selectedProcessId = process.ProcessId;
-                ImGui.SameLine();
-                DrawProcessActions(process);
+
+                if (_selectedProcessId == process.ProcessId)
+                {
+                    ImGui.TextDisabled("Selected process actions");
+                    DrawProcessActions(process);
+                }
+
                 ImGui.PopID();
             }
         }
@@ -59,22 +64,14 @@ internal static partial class Program
 
     private static void DrawProcessActions(SteamProcessInfo process)
     {
-        if (ImGui.SmallButton("Focus"))
+        if (ImGui.Button("Focus"))
             FocusProcess(process.ProcessId);
         ImGui.SameLine();
-        if (ImGui.SmallButton("Stop"))
+        if (ImGui.Button("Stop"))
             StopProcess(process.ProcessId, force: false);
         ImGui.SameLine();
-        if (ImGui.SmallButton("Kill"))
+        if (ImGui.Button("Kill"))
             StopProcess(process.ProcessId, force: true);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Restart"))
-        {
-            StopProcess(process.ProcessId, force: false);
-            SteamProfile? profile = _config.Profiles.FirstOrDefault(candidate => candidate.Id == process.ProfileId);
-            if (profile is not null)
-                LaunchProfile(profile);
-        }
     }
 
     private static void DrawProfiles()
