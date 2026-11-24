@@ -77,7 +77,8 @@ internal static partial class Program
                 profileHome,
                 steamRoot,
                 steamLibraries,
-                compatibilityToolPaths);
+                compatibilityToolPaths,
+                EnsureDolphinFileManager(profileHome));
             startInfo.ArgumentList.Add("--");
             startInfo.ArgumentList.Add(SteamExecutable);
 
@@ -106,7 +107,8 @@ internal static partial class Program
         string profileHome,
         string steamRoot,
         IReadOnlyList<string> steamLibraries,
-        IReadOnlyList<string> compatibilityToolPaths)
+        IReadOnlyList<string> compatibilityToolPaths,
+        string? fileManager)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -124,6 +126,12 @@ internal static partial class Program
         startInfo.ArgumentList.Add($"--env=XDG_DATA_HOME={Path.Combine(profileHome, ".local", "share")}");
         startInfo.ArgumentList.Add($"--env=XDG_CACHE_HOME={Path.Combine(profileHome, ".cache")}");
         startInfo.ArgumentList.Add($"--env=XDG_STATE_HOME={Path.Combine(profileHome, ".local", "state")}");
+        if (fileManager is not null)
+        {
+            // Open directories with the host's KDE file manager; without this
+            // hint xdg-open has no usable default inside the profile jail.
+            startInfo.ArgumentList.Add($"--env=FILEMANAGER={fileManager}");
+        }
         startInfo.ArgumentList.Add($"--read-only={HostHomeDirectory}");
         startInfo.ArgumentList.Add($"--read-write={profileHome}");
         startInfo.ArgumentList.Add($"--read-write={steamRoot}");
@@ -150,6 +158,57 @@ internal static partial class Program
             throw new DirectoryNotFoundException("Could not find the host Steam installation.");
 
         return new DirectoryInfo(steamRoot).ResolveLinkTarget(true)?.FullName ?? steamRoot;
+    }
+
+    // Point each profile's directory-opening at the host's KDE Dolphin. The
+    // profile jail has its own HOME/XDG_CONFIG_HOME and a read-only host home,
+    // so it has no directory -> file-manager association of its own; without
+    // this, xdg-open on a folder inside the jail has nothing to fall back to.
+    // Returns the Dolphin binary to pass via --env=FILEMANAGER, or null when
+    // Dolphin isn't installed (leaving the profile's behaviour unchanged).
+    private static string? EnsureDolphinFileManager(string profileHome)
+    {
+        string? dolphinPath = FindDolphin();
+        if (dolphinPath is null)
+            return null;
+
+        string configFile = Path.Combine(profileHome, ".config", "mimeapps.list");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(configFile)!);
+            if (!File.Exists(configFile))
+            {
+                File.WriteAllText(configFile,
+                    "# Managed by Steamalt: open folders with the host's KDE Dolphin.\n" +
+                    "[Default Applications]\n" +
+                    "inode/directory=org.kde.dolphin.desktop\n" +
+                    "x-directories=org.kde.dolphin.desktop\n");
+            }
+        }
+        catch (Exception ex)
+        {
+            _status = $"Could not record the profile file-manager default: {ex.Message}";
+            _isError = true;
+        }
+
+        return dolphinPath;
+    }
+
+    private static string? FindDolphin()
+    {
+        string[] candidates =
+        {
+            "/usr/bin/dolphin",
+            "/usr/local/bin/dolphin",
+            Path.Combine(HostHomeDirectory, ".local", "bin", "dolphin"),
+        };
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<string> FindCompatibilityToolPaths(
