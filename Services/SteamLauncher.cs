@@ -66,7 +66,7 @@ internal static partial class Program
             string profileHome = Path.Combine(ProfilesDirectory, profile.Id.ToString("N"));
             Directory.CreateDirectory(profileHome);
             string hostSteamRoot = FindSteamRoot();
-            string steamRoot = EnsureProfileSteamInstall(profileHome, hostSteamRoot);
+            string steamRoot = EnsureProfileSteamClient(profileHome, hostSteamRoot);
             EnsureProfileSteamLinks(profileHome, steamRoot);
             IReadOnlyList<string> steamLibraries = FindSteamLibraries(steamRoot);
             IReadOnlyList<string> compatibilityToolPaths = FindCompatibilityToolPaths(
@@ -206,47 +206,184 @@ internal static partial class Program
         return libraries.ToArray();
     }
 
-    private static string EnsureProfileSteamInstall(string profileHome, string hostSteamRoot)
+    // Top-level, per-login state that never belongs in a client mirror.
+    // Checked only at the profile Steam root so same-named client entries
+    // deeper in the tree (e.g. "steamrt64/steam") are still synced.
+    private static readonly HashSet<string> ProfileOwnedDirectories = new(StringComparer.Ordinal)
+    {
+        "steamapps", "userdata", "config", "logs", "appcache", "depotcache",
+        "steam", "var", "compatibilitytools.d"
+    };
+
+    private static string EnsureProfileSteamClient(string profileHome, string hostSteamRoot)
     {
         string profileSteamRoot = Path.Combine(profileHome, ".local", "share", "Steam");
-        var profileSteamInfo = new DirectoryInfo(profileSteamRoot);
-        if (profileSteamInfo.LinkTarget is not null)
+        if (new DirectoryInfo(profileSteamRoot).LinkTarget is not null)
         {
-            profileSteamInfo.Delete();
-        }
-        else if (Directory.Exists(Path.Combine(profileSteamRoot, "steamapps")))
-        {
-            return profileSteamRoot;
+            new DirectoryInfo(profileSteamRoot).Delete();
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(profileSteamRoot)!);
-        CopySteamClient(hostSteamRoot, profileSteamRoot);
+        SyncSteamClient(hostSteamRoot, profileSteamRoot, hostSteamRoot, profileSteamRoot, isRoot: true);
+
+        string sourceLibraryFolders = Path.Combine(hostSteamRoot, "steamapps", "libraryfolders.vdf");
+        if (File.Exists(sourceLibraryFolders))
+        {
+            string destinationSteamApps = Path.Combine(profileSteamRoot, "steamapps");
+            Directory.CreateDirectory(destinationSteamApps);
+            // Profiles share the host's libraries, so the library list always
+            // tracks the host (overwrite: keeps resync idempotent).
+            File.Copy(
+                sourceLibraryFolders,
+                Path.Combine(destinationSteamApps, "libraryfolders.vdf"),
+                overwrite: true);
+        }
+
         return profileSteamRoot;
     }
 
-    private static void CopySteamClient(string sourceDirectory, string destinationDirectory)
+    // One-way, incremental mirror of the host Steam client into the profile
+    // so profiles keep tracking host upgrades (e.g. the Scout -> SteamRT3
+    // migration) instead of staying frozen at the version that was first
+    // copied over. Per-login state (ProfileOwnedDirectories, root level
+    // only) is never touched. Nothing on the destination side is deleted
+    // except symlinks that this mirror replaces.
+    private static void SyncSteamClient(
+        string sourceDirectory,
+        string destinationDirectory,
+        string hostSteamRoot,
+        string profileSteamRoot,
+        bool isRoot)
     {
         Directory.CreateDirectory(destinationDirectory);
         foreach (string sourcePath in Directory.EnumerateFileSystemEntries(sourceDirectory))
         {
             string name = Path.GetFileName(sourcePath);
-            if (name is "steamapps" or "userdata" or "config" or "logs" or "appcache")
+            if (isRoot && ProfileOwnedDirectories.Contains(name))
                 continue;
 
             string destinationPath = Path.Combine(destinationDirectory, name);
+
+            // Mirror links as links (matching the host layout and the
+            // known-good profile trees) instead of duplicating their
+            // targets; covers links to files, directories, and dangling.
+            if (GetLinkTarget(sourcePath) is not null)
+            {
+                SyncSymlink(sourcePath, destinationPath, hostSteamRoot, profileSteamRoot);
+                continue;
+            }
+
             if (Directory.Exists(sourcePath))
-                CopySteamClient(sourcePath, destinationPath);
-            else
-                File.Copy(sourcePath, destinationPath, overwrite: false);
+            {
+                SyncSteamClient(
+                    sourcePath, destinationPath, hostSteamRoot, profileSteamRoot, isRoot: false);
+                continue;
+            }
+
+            if (File.Exists(sourcePath))
+                SyncRegularFile(sourcePath, destinationPath);
+        }
+    }
+
+    private static void SyncRegularFile(string sourcePath, string destinationPath)
+    {
+        var sourceInfo = new FileInfo(sourcePath);
+        var destinationInfo = new FileInfo(destinationPath);
+
+        if (destinationInfo.LinkTarget is not null)
+        {
+            // A profile symlink (old Scout shim) that the host now keeps as
+            // a regular file: unlink it and materialize the real file. A
+            // link already resolved to this source is left as-is.
+            if (destinationInfo.ResolveLinkTarget(true)?.FullName == sourcePath)
+                return;
+            File.Delete(destinationPath);
+        }
+        else if (destinationInfo.Exists
+            && destinationInfo.Length == sourceInfo.Length
+            && destinationInfo.LastWriteTimeUtc == sourceInfo.LastWriteTimeUtc)
+        {
+            return;
         }
 
-        string sourceLibraryFolders = Path.Combine(sourceDirectory, "steamapps", "libraryfolders.vdf");
-        if (File.Exists(sourceLibraryFolders))
+        // Atomic replace so a running process never sees a half-written
+        // binary; SetUnixFileMode keeps the executable bit.
+        string tempPath = destinationPath + ".sync.tmp";
+        File.Copy(sourcePath, tempPath, overwrite: true);
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(tempPath, File.GetUnixFileMode(sourcePath));
+        File.Move(tempPath, destinationPath, overwrite: true);
+    }
+
+    private static string? GetLinkTarget(string path)
+    {
+        try
         {
-            string destinationSteamApps = Path.Combine(destinationDirectory, "steamapps");
-            Directory.CreateDirectory(destinationSteamApps);
-            File.Copy(sourceLibraryFolders, Path.Combine(destinationSteamApps, "libraryfolders.vdf"), overwrite: false);
+            return new FileInfo(path).LinkTarget ?? new DirectoryInfo(path).LinkTarget;
         }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static void SyncSymlink(
+        string sourcePath,
+        string destinationPath,
+        string hostSteamRoot,
+        string profileSteamRoot)
+    {
+        string target = new FileInfo(sourcePath).LinkTarget
+            ?? new DirectoryInfo(sourcePath).LinkTarget
+            ?? throw new InvalidOperationException($"Missing link target for {sourcePath}");
+        string desiredTarget = RewriteHostRootLinkTarget(target, hostSteamRoot, profileSteamRoot);
+
+        if (GetLinkTarget(destinationPath) is not null)
+        {
+            // File.Delete unlinks stale and dangling symlinks alike;
+            // ResolveLinkTarget compares the actual target so a same-path
+            // link is not needlessly replaced.
+            if (new FileInfo(destinationPath).ResolveLinkTarget(true)?.FullName
+                    == Path.GetFullPath(sourcePath)
+                || new FileInfo(destinationPath).LinkTarget!.Equals(
+                    desiredTarget, StringComparison.Ordinal))
+                return;
+            File.Delete(destinationPath);
+        }
+        else if (Directory.Exists(destinationPath))
+        {
+            // A profile-owned directory (e.g. pressure-vessel scratch) at
+            // the same path as a host link; keep it and skip the link.
+            return;
+        }
+        else if (File.Exists(destinationPath))
+        {
+            new FileInfo(destinationPath).Delete();
+        }
+
+        File.CreateSymbolicLink(destinationPath, desiredTarget);
+    }
+
+    // Absolute links that sit inside the host Steam root are rewritten
+    // onto the profile's own mirror so each profile stays self-contained
+    // (mirrors the layout of known-good profiles, where runtime tool links
+    // point into the profile tree, not the host). Relative links and links
+    // to system paths (e.g. /usr/lib/millennium/...) are kept verbatim.
+    private static string RewriteHostRootLinkTarget(
+        string target,
+        string hostSteamRoot,
+        string profileSteamRoot)
+    {
+        if (!Path.IsPathRooted(target))
+            return target;
+
+        string fullTarget = Path.GetFullPath(target);
+        string hostRoot = Path.GetFullPath(hostSteamRoot).TrimEnd(Path.DirectorySeparatorChar);
+        if (!fullTarget.StartsWith(hostRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            return target;
+
+        string offset = fullTarget[(hostRoot.Length + 1)..];
+        return Path.GetFullPath(Path.Combine(profileSteamRoot, offset));
     }
 
     private static void EnsureProfileSteamLinks(string profileHome, string steamRoot)

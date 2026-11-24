@@ -9,7 +9,7 @@ Steamalt is a Linux-only launcher for starting Steam and Steam games through Fir
 - Steam and Firejail installed and available in `PATH`
 - Steam installed on the host, with games installed in its libraries
 
-Steamalt does not install or update Steam or games. The first launch copies the host Steam client files and library index into the profile; after that, each profile has its own Steam login, client state, shortcuts, and Proton compatibility data. Installed game libraries remain shared. Host-installed Proton and other compatibility tools are exposed to each profile read-only through `STEAM_COMPAT_TOOL_PATHS`, including tools installed in registered Steam libraries; each profile keeps its own prefixes and game state.
+Steamalt does not install or update Steam or games. On every launch, Steamalt mirrors the host Steam client files (and the library index) into the profile so profiles keep tracking host client upgrades such as the Scout to SteamRT3 migration; per-login data (config, logs, appcache, userdata, depotcache, and the game library index contents) is never touched. After the first launch, each profile has its own Steam login, client state, shortcuts, and Proton compatibility data. Installed game libraries remain shared. Host-installed Proton and other compatibility tools are exposed to each profile read-only through `STEAM_COMPAT_TOOL_PATHS`, including tools installed in registered Steam libraries; each profile keeps its own prefixes and game state.
 
 ## Usage
 
